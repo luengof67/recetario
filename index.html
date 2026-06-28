@@ -9,12 +9,15 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Recetario">
 <link rel="manifest" href="manifest.json">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <link rel="apple-touch-icon" href="icon-192.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <style>
   :root{
@@ -72,6 +75,15 @@
   .btn-gold:hover{background:#C69A45}
   .btn-ghost{background:transparent;color:#FAF7F2;border:1.5px solid rgba(250,247,242,.35)}
   .btn-ghost:hover{border-color:var(--secondary);color:var(--secondary)}
+  .sesion-estado{
+    font-size:13px;font-weight:800;cursor:pointer;
+    padding:7px 13px;border-radius:999px;white-space:nowrap;
+    border:1.5px solid rgba(250,247,242,.3);color:#FAF7F2;
+    transition:border-color .15s ease;
+  }
+  .sesion-estado:hover{border-color:var(--secondary)}
+  .sesion-estado.on{border-color:var(--ok);color:#8FD9A4}
+  .sesion-estado.off{border-color:rgba(232,98,58,.5);color:#F0A58E}
   .btn-line{background:#fff;color:var(--primary);border:1.5px solid var(--line)}
   .btn-line:hover{border-color:var(--secondary)}
   .btn-danger{background:#fff;color:#B3402A;border:1.5px solid #E8C4BA}
@@ -368,6 +380,7 @@
   <button class="btn btn-ghost" onclick="document.getElementById('importFile').click()">⬆ Importar copia</button>
   <input type="file" id="importFile" accept=".json,application/json" style="display:none" onchange="importarCopia(event)">
   <button class="btn btn-accent" onclick="abrirForm()">+ Nueva receta</button>
+  <span id="sesionEstado" class="sesion-estado" onclick="gestionarSesion()" title="Sesión de administrador"></span>
 </header>
 
 <div class="toolbar">
@@ -382,6 +395,35 @@
 </div>
 
 <main class="grid" id="grid"></main>
+
+<!-- Modal login admin -->
+<div class="overlay" id="ovLogin">
+  <div class="modal" style="width:min(440px,100%)">
+    <div class="modal-head">
+      <h2>Acceso de administrador</h2>
+      <button class="close-x" onclick="cerrarLogin()" aria-label="Cerrar">×</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin-bottom:16px;line-height:1.55;color:var(--muted);font-weight:600;font-size:14.5px">
+        Inicia sesión con tu cuenta de Hablemos de Cocina para poder publicar recetas en la app.
+      </p>
+      <div class="form-grid">
+        <label class="span12">Correo electrónico
+          <input type="email" id="loginEmail" placeholder="tucorreo@gmail.com" autocomplete="username">
+        </label>
+        <label class="span12">Contraseña
+          <input type="password" id="loginPass" placeholder="••••••••" autocomplete="current-password"
+            onkeydown="if(event.key==='Enter')hacerLogin()">
+        </label>
+      </div>
+      <p id="loginError" style="color:#B3402A;font-weight:700;font-size:14px;margin-top:12px;min-height:18px"></p>
+      <div class="form-actions">
+        <button class="btn btn-line" onclick="cerrarLogin()">Cancelar</button>
+        <button class="btn btn-accent" id="loginBtn" onclick="hacerLogin()">Iniciar sesión</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <!-- Modal importar de URL -->
 <div class="overlay" id="ovImport">
@@ -500,10 +542,14 @@ const firebaseConfig = {
   appId: "1:667488331445:web:0b23e6035ca5591d5e00fc"
 };
 let db = null;
+let auth = null;
+let usuarioActual = null;
+const ADMIN_UID = 'JCmiTHCaELWYyXKATa1Cv6xWYKf1';
 try{
   if(window.firebase && firebase.apps.length === 0){
     firebase.initializeApp(firebaseConfig);
     db = firebase.firestore();
+    auth = firebase.auth();
   }
 }catch(e){
   console.error('Firebase no disponible', e);
@@ -814,12 +860,103 @@ function imprimirReceta(){
   window.print();
 }
 
+/* ───── Sesión de administrador ───── */
+function actualizarEstadoSesion(){
+  const el = document.getElementById('sesionEstado');
+  if(!el) return;
+  if(!auth){ el.style.display = 'none'; return; }
+  if(usuarioActual){
+    el.className = 'sesion-estado on';
+    el.textContent = '● Admin';
+    el.title = 'Sesión iniciada como ' + usuarioActual.email + ' · pulsa para cerrar sesión';
+  }else{
+    el.className = 'sesion-estado off';
+    el.textContent = '○ Iniciar sesión';
+    el.title = 'Inicia sesión para publicar';
+  }
+}
+
+function gestionarSesion(){
+  if(usuarioActual){
+    if(confirm('¿Cerrar la sesión de administrador?')){
+      auth.signOut();
+      toast('Sesión cerrada');
+    }
+  }else{
+    abrirLogin();
+  }
+}
+
+function abrirLogin(){
+  document.getElementById('loginError').textContent = '';
+  document.getElementById('loginPass').value = '';
+  if(!document.getElementById('loginEmail').value){
+    document.getElementById('loginEmail').value = 'luengof67@gmail.com';
+  }
+  document.getElementById('ovLogin').classList.add('open');
+  setTimeout(() => document.getElementById('loginPass').focus(), 50);
+}
+function cerrarLogin(){
+  document.getElementById('ovLogin').classList.remove('open');
+}
+
+async function hacerLogin(){
+  const email = document.getElementById('loginEmail').value.trim();
+  const pass = document.getElementById('loginPass').value;
+  const err = document.getElementById('loginError');
+  const btn = document.getElementById('loginBtn');
+  err.textContent = '';
+  if(!email || !pass){ err.textContent = 'Introduce email y contraseña'; return; }
+  if(!auth){ err.textContent = 'Firebase no disponible'; return; }
+
+  btn.disabled = true;
+  btn.textContent = 'Entrando…';
+  try{
+    await auth.signInWithEmailAndPassword(email, pass);
+    cerrarLogin();
+    toast('Sesión iniciada como administrador');
+  }catch(e){
+    const msg = {
+      'auth/invalid-credential': 'Email o contraseña incorrectos',
+      'auth/wrong-password': 'Contraseña incorrecta',
+      'auth/user-not-found': 'No existe esa cuenta',
+      'auth/invalid-email': 'El email no es válido',
+      'auth/too-many-requests': 'Demasiados intentos, espera un momento',
+      'auth/network-request-failed': 'Sin conexión a internet'
+    }[e.code] || ('Error: ' + (e.message || e.code));
+    err.textContent = msg;
+  }finally{
+    btn.disabled = false;
+    btn.textContent = 'Iniciar sesión';
+  }
+}
+
+// Escuchar cambios de sesión (persiste entre recargas)
+if(auth){
+  auth.onAuthStateChanged(user => {
+    usuarioActual = user;
+    actualizarEstadoSesion();
+    if(document.getElementById('ovDetalle').classList.contains('open')){
+      renderDetalle();
+    }
+  });
+}
+
 /* ───── Publicar en Hablemos de Cocina (Firestore) ───── */
 async function publicarEnHdC(id){
   const r = recetas.find(x => x.id === id);
   if(!r) return;
   if(!db){
     toast('Firebase no está disponible (¿sin conexión?)', 'warn');
+    return;
+  }
+  if(!usuarioActual){
+    toast('Inicia sesión de administrador para publicar', 'warn');
+    abrirLogin();
+    return;
+  }
+  if(usuarioActual.uid !== ADMIN_UID){
+    toast('Esta cuenta no tiene permisos de administrador', 'warn');
     return;
   }
 
@@ -1362,7 +1499,7 @@ document.addEventListener('keydown', e => {
   const cocinaAbierta = document.getElementById('ovCocina').classList.contains('open');
   if(e.key === 'Escape'){
     if(cocinaAbierta){ cerrarCocina(); return; }
-    cerrarForm(); cerrarDetalle(); cerrarImportUrl();
+    cerrarForm(); cerrarDetalle(); cerrarImportUrl(); cerrarLogin();
     return;
   }
   if(cocinaAbierta){
@@ -1370,9 +1507,9 @@ document.addEventListener('keydown', e => {
     if(e.key === 'ArrowLeft') pasoCocina(-1);
   }
 });
-['ovForm','ovDetalle','ovImport'].forEach(id => {
+['ovForm','ovDetalle','ovImport','ovLogin'].forEach(id => {
   document.getElementById(id).addEventListener('click', e => {
-    if(e.target.id === id){ cerrarForm(); cerrarDetalle(); cerrarImportUrl(); }
+    if(e.target.id === id){ cerrarForm(); cerrarDetalle(); cerrarImportUrl(); cerrarLogin(); }
   });
 });
 
@@ -1387,6 +1524,7 @@ if('serviceWorker' in navigator){
 llenarSelects();
 cargar();
 render();
+actualizarEstadoSesion();
 </script>
 </body>
 </html>
